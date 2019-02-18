@@ -423,7 +423,7 @@ endef
 
 .PHONY: all checkdirs clean tools $(TOOLS_DIRS) test samples-clean samples $(SAMPLES_DIRS) docs api wiki
 
-all: checkdirs $(APP_AR) tools
+all: checkdirs
 
 ifeq ($(ENABLE_CUSTOM_PWM), 1)
 $(USER_LIBDIR)/libpwm_open.a: third-party/pwm/pwm.c
@@ -458,7 +458,7 @@ $(USER_LIBDIR)/libmqttc.a:
 			CFLAGS_EXTRA="-Iinclude -I$(SDK_BASE)/include $(CFLAGS_COMMON)" \
 			LIB_FOLDER="$(SMING_HOME)/$(USER_LIBDIR)/" lib
 
-$(APP_AR): $(OBJ)
+$(APP_AR): checkdirs $(OBJ)
 	$(vecho) "AR $@"
 	$(Q) $(AR) cru $@ $^
 	$(vecho) "Installing $(LIBSMING)"
@@ -470,14 +470,24 @@ endif
 	$(Q) cp -r $(APP_AR) $(USER_LIBDIR)/$(LIBSMING).a
 	$(vecho) "Done"
 
-checkdirs: $(ARDUINO_LIBRARIES) $(THIRD_PARTY_DATA) reload $(BUILD_DIR) $(FW_BASE) $(CUSTOM_TARGETS)
+$(ARDUINO_LIBRARIES): submodules
 
-$(BUILD_DIR):
+$(THIRD_PARTY_DATA):
+# if the new submodule brings source code files that need to be compiled inside Sming
+# then we need somehow to be able to "see" these new files.
+# For now we solve this by "reloading" the makefile after fetching a module.
+	RELOAD_MKFILE=1
+
+$(BUILD_DIR): reload
 	$(Q) mkdir -p $@
 
-$(FW_BASE):
+$(FW_BASE): $(BUILD_DIR)
 	$(Q) mkdir -p $@
 	$(Q) mkdir -p $@/upgrade
+
+$(CUSTOM_TARGETS): $(FW_BASE)
+
+checkdirs: $(CUSTOM_TARGETS)
 
 clean:
 	$(Q) rm -f $(APP_AR)
@@ -497,9 +507,11 @@ endif
 
 test: Basic_Blink Basic_rBoot Basic_Ssl Basic_HwPWM
 
-docs/wiki/Home.md:
-	$(vecho) "No Wiki submodule found. Using git to fetch it..."
-	$(Q) $(GIT) submodule update --init ../docs/wiki
+submodules:
+	$(vecho) "Fetching submodules..."
+	$(Q) $(GIT) submodule update --init --recursive --jobs 8
+
+docs/wiki/Home.md: submodules
 
 docs/api/error.log:
 ifndef DOXYGEN
@@ -519,31 +531,21 @@ api: docs/api/sming/index.html
 
 docs: wiki api
 
-third-party/%:
-	$(vecho) "Fetching $(dir $@) ..."
-	$(Q) $(GIT) submodule update --init --recursive $(dir $@)
+third-party/%: submodules
 	$(Q) if [ -f $(patsubst third-party/%/,third-party/.patches/%.patch, $(dir $@)) ]; then \
+		$(vecho) "Patching $(dir $@) ..."; \
 		touch $(patsubst third-party/%/,third-party/.patches/%.patch, $(dir $@)); \
 		cd $(dir $@); $(GIT) apply -v $(patsubst third-party/%/,$(SMING_HOME)/third-party/.patches/%.patch, $(dir $@)) --ignore-whitespace --whitespace=nowarn; \
 	fi
-# if the new submodule brings source code files that need to be compiled inside Sming
-# then we need somehow to be able to "see" these new files.
-# For now we solve this by "reloading" the makefile after fetching a module.
-    RELOAD_MKFILE=1
 
-Libraries/%:
-	$(vecho) "Fetching Arduino Library $(dir $@) ..."
-	$(Q) $(GIT) submodule update --init --recursive $(dir $@)
+Libraries/%: submodules
 	$(Q) if [ -f $(patsubst Libraries/%/,Libraries/.patches/%.patch, $(dir $@)) ]; then \
+		$(vecho) "Fetching Arduino Library $(dir $@) ..."; \
 		touch $(patsubst Libraries/%/,Libraries/.patches/%.patch, $(dir $@)); \
 		cd $(dir $@); $(GIT) apply -v $(patsubst Libraries/%/,$(SMING_HOME)/Libraries/.patches/%.patch, $(dir $@)) --ignore-whitespace --whitespace=nowarn; \
 	fi
-# if the new submodule brings source code files that need to be compiled inside Sming
-# then we need somehow to be able to "see" these new files.
-# For now we solve this by "reloading" the makefile after fetching a module.
-    RELOAD_MKFILE=1
 
-reload:
+reload: $(THIRD_PARTY_DATA)
 	$(Q) if [ $(RELOAD_MKFILE) -eq 1 ]; then \
         $(MAKE) -C $(SMING_HOME) $(MAKECMDGOALS) RELOAD_MKFILE=0; \
     fi
@@ -568,7 +570,7 @@ libraries-clean:
 	$(Q) rm -rf Libraries
 	$(Q) $(GIT) checkout Libraries
 
-tools: third-party/spiffs/makefile $(TOOLS_DIRS)
+tools: $(APP_AR) | third-party/spiffs/makefile $(TOOLS_DIRS)
 
 $(TOOLS_DIRS):
 	$(Q) if [ -d $(SMING_HOME)/../tools/$@ ]; then \
